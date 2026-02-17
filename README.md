@@ -10,6 +10,7 @@ A personal AI agent that runs on a Mac Mini, communicates through Slack, and lea
 - **Scheduled tasks** — cron-based skill triggers with persistent job storage (survives restarts)
 - **Conversation memory** — full SQLite-backed history for context, resumption, and review
 - **Output export** — saves session transcripts as markdown or text files
+- **Google services** (optional) — read-only Gmail access + Google Drive document creation, with zero outbound communication
 
 ## Prerequisites
 
@@ -177,6 +178,8 @@ output:
 | `output.format` | No | `markdown` or `text` |
 | `output.save_to` | No | File path with `{date}` or `{week}` placeholders |
 | `output.post_to_channel` | No | Post the output back to the channel when the skill completes |
+| `services` | No | External services: `gmail`, `drive` (requires Google setup) |
+| `auto_fetch_unread` | No | Pre-fetch unread emails as context (requires `gmail` service) |
 
 ## LLM routing
 
@@ -187,6 +190,85 @@ The bot picks which LLM handles each message using three levels of config:
 3. **Global override** — set `llm_override: cloud` in `config.yaml` to force all traffic to one provider
 
 If Ollama is down or errors out, the bot automatically falls back to Claude.
+
+## Google services (optional)
+
+The bot can optionally connect to a Google account for read-only email access and document creation. **Security: the bot has zero outbound communication through Google** — it cannot send emails, share documents, or delete anything.
+
+### What it enables
+
+- **Gmail (read-only)** — search inbox, list unread, read message content
+- **Google Drive (create + read)** — create Google Docs, list files
+
+### Setup
+
+#### 1. Google Cloud Console
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com)
+2. Create a project (or use an existing one)
+3. Enable these APIs:
+   - Gmail API
+   - Google Drive API
+   - Google Docs API
+4. Go to **APIs & Services > Credentials**
+5. Click **Create Credentials > OAuth client ID**
+6. Choose **Desktop app**, name it, and download the JSON file
+
+#### 2. Place credentials
+
+```bash
+cp ~/Downloads/client_secret_XXXXX.json ~/.slack-booty/google_credentials.json
+```
+
+#### 3. Authenticate
+
+```bash
+python -m services.google_auth
+```
+
+This opens a browser window. Log into the bot's Google account and grant permissions. The refresh token is saved to `~/.slack-booty/google_token.json` and auto-refreshes from then on.
+
+#### 4. Enable in config
+
+```yaml
+google:
+  enabled: true
+```
+
+#### 5. Restart the bot
+
+On startup, the bot will report Google status in its DM:
+
+> Back online. 3 skill(s) active, next scheduled skill: daily-checkin. Google: connected.
+
+### Skills with Google services
+
+Skills can declare which services they need:
+
+```yaml
+name: email-summary
+description: Summarize unread emails every weekday morning
+trigger: scheduled
+schedule: "0 8 * * 1-5"
+channel: dm
+llm: cloud
+services:
+  - gmail
+auto_fetch_unread: true
+context: |
+  Summarize the user's unread emails. Group by sender,
+  highlight anything urgent. Keep it under 10 lines.
+max_turns: 2
+```
+
+### Scopes used
+
+| Scope | Access |
+|---|---|
+| `gmail.readonly` | Read and search emails only |
+| `drive.file` | Create and read files the bot created (cannot access other files) |
+
+No send, share, delete, or modify scopes are requested.
 
 ## Running as a service (launchd)
 
@@ -246,12 +328,17 @@ slack-booty/
 ├── providers/
 │   ├── ollama.py            # Local model client
 │   └── claude.py            # Anthropic API client
+├── services/
+│   ├── google_auth.py       # OAuth2 token management
+│   ├── gmail.py             # Gmail read-only client
+│   ├── drive.py             # Google Drive client (create + read)
+│   └── google_services.py   # Unified async facade
 ├── slack/
 │   ├── bot.py               # Bolt app + Socket Mode
 │   └── handlers.py          # Event handlers
 ├── db/
 │   └── schema.sql           # SQLite schema
-└── tests/                   # 99 tests
+└── tests/                   # 169 tests
 ```
 
 ## Tests
@@ -268,6 +355,8 @@ python -m pytest tests/ -v
 | Database | `~/.slack-booty/slack-booty.db` |
 | Logs | `~/.slack-booty/slack-booty.log` |
 | Skills | `~/.slack-booty/skills/*.yaml` |
+| Google OAuth token | `~/.slack-booty/google_token.json` |
+| Google credentials | `~/.slack-booty/google_credentials.json` |
 | Check-in exports | `~/checkins/{date}.md` |
 | Meal plans | `~/meal-plans/{week}.md` |
 | Grocery lists | `~/grocery-lists/{date}.md` |

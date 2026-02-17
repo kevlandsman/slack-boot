@@ -33,6 +33,10 @@ Optional fields:
     format: markdown or text
     save_to: file path pattern with {date} or {week} placeholders
     post_to_channel: true/false
+- services: list of external services the skill needs. Available: ["gmail", "drive"]
+  Use "gmail" for skills that read or search email (READ-ONLY — no sending allowed).
+  Use "drive" for skills that create or list Google documents (NO sharing or deleting).
+- auto_fetch_unread: true/false (if services includes gmail, pre-fetch unread emails as context)
 
 Respond with ONLY the YAML content, no explanation or markdown fences."""
 

@@ -262,3 +262,58 @@ class TestAgentCore:
     async def test_close(self, agent, mock_llm_router):
         await agent.close()
         mock_llm_router.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_general_with_google_services(self, state_manager, mock_llm_router, skill_loader):
+        mock_google = MagicMock()
+        mock_google.available = True
+        agent = AgentCore(
+            state_manager=state_manager,
+            llm_router=mock_llm_router,
+            skill_loader=skill_loader,
+            bot_user_id="U_BOT",
+            google_services=mock_google,
+        )
+        # LLM returns a response with no action blocks
+        mock_llm_router.get_response = AsyncMock(
+            return_value=("I can check your email!", "local")
+        )
+        event = {"text": "Check my email", "channel": "D123", "user": "U1"}
+        response = await agent.handle_message(event)
+        assert response == "I can check your email!"
+
+        # Verify system prompt included Google capabilities
+        call_args = mock_llm_router.get_response.call_args
+        system_prompt = call_args[0][1]
+        assert "Gmail" in system_prompt or "Google" in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_general_without_google_services(self, agent, mock_llm_router):
+        """Without google_services, system prompt has no Google mention."""
+        event = {"text": "What's the weather?", "channel": "D123", "user": "U1"}
+        await agent.handle_message(event)
+        call_args = mock_llm_router.get_response.call_args
+        system_prompt = call_args[0][1]
+        assert "Gmail" not in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_general_processes_action_blocks(self, state_manager, mock_llm_router, skill_loader):
+        mock_google = MagicMock()
+        mock_google.available = True
+        mock_google.search_email = AsyncMock(return_value=[
+            {"id": "m1", "from": "alice@test.com", "subject": "Test Email"},
+        ])
+        agent = AgentCore(
+            state_manager=state_manager,
+            llm_router=mock_llm_router,
+            skill_loader=skill_loader,
+            bot_user_id="U_BOT",
+            google_services=mock_google,
+        )
+        mock_llm_router.get_response = AsyncMock(
+            return_value=("Here are results: [[ACTION:search_email|query=from:alice]]", "cloud")
+        )
+        event = {"text": "Search for emails from alice", "channel": "D123", "user": "U1"}
+        response = await agent.handle_message(event)
+        assert "alice@test.com" in response
+        assert "[[ACTION:" not in response

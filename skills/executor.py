@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from agent.state import ConversationStateManager
@@ -10,6 +11,9 @@ from skills.output import OutputHandler
 
 logger = logging.getLogger(__name__)
 
+# Matches [[ACTION:action_name|key=value|key=value]]
+ACTION_PATTERN = re.compile(r"\[\[ACTION:(\w+)\|(.+?)\]\]")
+
 
 class SkillExecutor:
     def __init__(
@@ -18,11 +22,13 @@ class SkillExecutor:
         llm_router: LLMRouter,
         output_handler: OutputHandler,
         skill_loader: SkillLoader | None = None,
+        google_services=None,
     ):
         self.state = state_manager
         self.llm = llm_router
         self.output = output_handler
         self.skill_loader = skill_loader
+        self.google_services = google_services
 
     def build_system_prompt(self, skill_config: dict) -> str:
         parts = [skill_config["context"].strip()]
@@ -54,6 +60,63 @@ class SkillExecutor:
 
         return "\n".join(parts)
 
+    async def build_system_prompt_async(self, skill_config: dict) -> str:
+        """Build system prompt with optional service context."""
+        base_prompt = self.build_system_prompt(skill_config)
+        service_context = await self._build_service_context(skill_config)
+        return base_prompt + service_context
+
+    async def _build_service_context(self, skill_config: dict) -> str:
+        """Fetch data from declared services and format as context for the LLM."""
+        services = skill_config.get("services", [])
+        if (
+            not services
+            or not self.google_services
+            or not self.google_services.available
+        ):
+            return ""
+
+        parts = []
+
+        if "gmail" in services:
+            parts.append(
+                "\n\nYou have access to Gmail (read-only). "
+                "Available actions:\n"
+                "  [[ACTION:search_email|query=GMAIL_QUERY]]\n"
+                "  [[ACTION:read_email|id=MESSAGE_ID]]\n"
+                "You CANNOT send emails, share, or delete anything."
+            )
+            # Pre-fetch unread emails if requested
+            if skill_config.get("auto_fetch_unread"):
+                try:
+                    emails = await self.google_services.list_unread_email(
+                        max_results=10
+                    )
+                    if emails:
+                        parts.append("\nCurrent unread emails:")
+                        for e in emails:
+                            parts.append(
+                                f"  - [{e['id']}] From: {e['from']} | "
+                                f"Subject: {e['subject']} | {e['snippet']}"
+                            )
+                    else:
+                        parts.append("\nNo unread emails.")
+                except Exception:
+                    logger.warning(
+                        "Failed to pre-fetch unread emails", exc_info=True
+                    )
+
+        if "drive" in services:
+            parts.append(
+                "\n\nYou have access to Google Drive (create and read only). "
+                "Available actions:\n"
+                "  [[ACTION:create_doc|title=TITLE|content=CONTENT]]\n"
+                "  [[ACTION:list_files|query=DRIVE_QUERY]]\n"
+                "You CANNOT share documents, set permissions, or delete files."
+            )
+
+        return "\n".join(parts)
+
     async def start_skill(
         self,
         skill_config: dict,
@@ -62,7 +125,12 @@ class SkillExecutor:
         slack_thread: str,
     ) -> tuple[str, str]:
         """Start a new skill conversation. Returns (response_text, conversation_id)."""
-        system_prompt = self.build_system_prompt(skill_config)
+        # Use async prompt builder if skill declares services
+        if skill_config.get("services"):
+            system_prompt = await self.build_system_prompt_async(skill_config)
+        else:
+            system_prompt = self.build_system_prompt(skill_config)
+
         llm_provider = skill_config.get("llm", "local")
 
         conv_id = self.state.create_conversation(
@@ -78,6 +146,9 @@ class SkillExecutor:
         response, provider_used = await self.llm.get_response(
             messages, system_prompt, skill_config
         )
+
+        # Process any action blocks the LLM included
+        response = await self.process_service_actions(response)
 
         self.state.add_message(conv_id, "system", system_prompt)
         self.state.add_message(conv_id, "assistant", response)
@@ -117,6 +188,9 @@ class SkillExecutor:
             messages, system_prompt, skill_config
         )
 
+        # Process any action blocks the LLM included
+        response = await self.process_service_actions(response)
+
         self.state.add_message(conversation_id, "assistant", response)
 
         current_state = conv.get("state", {})
@@ -143,3 +217,90 @@ class SkillExecutor:
         )
 
         return response
+
+    # ------------------------------------------------------------------
+    # Service action processing
+    # ------------------------------------------------------------------
+
+    async def process_service_actions(self, response: str) -> str:
+        """Parse ``[[ACTION:...]]`` blocks, execute them, and replace with results."""
+        if not self.google_services or "[[ACTION:" not in response:
+            return response
+
+        matches = list(ACTION_PATTERN.finditer(response))
+        if not matches:
+            return response
+
+        # Process in reverse order so replacements don't shift offsets
+        for match in reversed(matches):
+            replacement = await self._execute_action(
+                match.group(1), match.group(2)
+            )
+            response = (
+                response[: match.start()] + replacement + response[match.end() :]
+            )
+
+        return response
+
+    async def _execute_action(self, action_name: str, params_str: str) -> str:
+        """Execute a single service action and return a human-readable result."""
+        try:
+            params = dict(
+                p.split("=", 1) for p in params_str.split("|") if "=" in p
+            )
+        except ValueError:
+            return f"(Could not parse action parameters: {params_str})"
+
+        try:
+            if action_name == "search_email":
+                query = params.get("query", "")
+                results = await self.google_services.search_email(query)
+                if not results:
+                    return "No emails found."
+                lines = [
+                    f"- From: {e['from']} | Subject: {e['subject']} "
+                    f"(ID: {e['id']})"
+                    for e in results[:10]
+                ]
+                return "Email results:\n" + "\n".join(lines)
+
+            elif action_name == "read_email":
+                msg = await self.google_services.read_email(params["id"])
+                body_preview = msg.get("body", "")[:500]
+                return (
+                    f"From: {msg['from']}\n"
+                    f"Subject: {msg['subject']}\n"
+                    f"Date: {msg['date']}\n\n"
+                    f"{body_preview}"
+                )
+
+            elif action_name == "create_doc":
+                result = await self.google_services.create_document(
+                    title=params.get("title", "Untitled"),
+                    content=params.get("content", ""),
+                )
+                return (
+                    f"Created document: *{result['title']}*\n"
+                    f"Link: {result['url']}"
+                )
+
+            elif action_name == "list_files":
+                query = params.get("query")
+                results = await self.google_services.list_drive_files(query=query)
+                if not results:
+                    return "No files found."
+                lines = [
+                    f"- {f['name']} ({f.get('mimeType', 'unknown')}) "
+                    f"[link]({f.get('webViewLink', '')})"
+                    for f in results[:10]
+                ]
+                return "Drive files:\n" + "\n".join(lines)
+
+            else:
+                return f"(Unknown action: {action_name})"
+
+        except Exception as e:
+            logger.error(
+                "Service action %s failed: %s", action_name, e, exc_info=True
+            )
+            return f"(Action {action_name} failed: {e})"

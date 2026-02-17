@@ -23,16 +23,21 @@ class AgentCore:
         bot_user_id: str,
         scheduler: SkillScheduler | None = None,
         slack_client=None,
+        google_services=None,
     ):
         self.state = state_manager
         self.llm = llm_router
         self.skills = skill_loader
         self.bot_user_id = bot_user_id
         self.scheduler = scheduler
+        self.google_services = google_services
 
         self.router = MessageRouter(state_manager, skill_loader, bot_user_id)
         self.output_handler = OutputHandler(slack_client=slack_client)
-        self.executor = SkillExecutor(state_manager, llm_router, self.output_handler, skill_loader)
+        self.executor = SkillExecutor(
+            state_manager, llm_router, self.output_handler, skill_loader,
+            google_services=google_services,
+        )
         self.creator = SkillCreator(llm_router, skill_loader)
 
     async def handle_message(self, event: dict) -> str | None:
@@ -136,13 +141,35 @@ class AgentCore:
     async def _handle_general(self, event: dict, context: dict) -> str | None:
         text = context["text"]
         messages = [{"role": "user", "content": text}]
+
+        capabilities = ""
+        if self.google_services and self.google_services.available:
+            capabilities = (
+                "\nYou have access to Google services (read-only Gmail + Google Drive). "
+                "You can: search and read emails, list unread emails, "
+                "create Google Docs, and list Drive files. "
+                "You CANNOT send emails, share documents, or delete anything. "
+                "If the user asks about email or documents, offer to help. "
+                "To perform an action, include an action block in your response:\n"
+                "  [[ACTION:search_email|query=from:someone subject:topic]]\n"
+                "  [[ACTION:read_email|id=MESSAGE_ID]]\n"
+                "  [[ACTION:create_doc|title=Doc Title|content=The content]]\n"
+                "  [[ACTION:list_files|query=name contains 'keyword']]\n"
+            )
+
         system_prompt = (
             "You are Slack-Booty, a helpful personal AI assistant. "
             "You communicate through Slack. Be concise and friendly. "
             "If the user seems to want to set up a recurring task or workflow, "
             "let them know they can ask you to create a skill for that."
+            + capabilities
         )
         response, _ = await self.llm.get_response(messages, system_prompt)
+
+        # Process any service action blocks in the response
+        if self.google_services and self.google_services.available:
+            response = await self.executor.process_service_actions(response)
+
         return response
 
     async def close(self):

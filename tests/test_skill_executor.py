@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from agent.state import ConversationStateManager
 from skills.executor import SkillExecutor
 from skills.loader import SkillLoader
@@ -161,3 +161,221 @@ class TestSkillExecutor:
         mock_llm_router.get_response = AsyncMock(return_value=("Response", "local"))
         response = await executor.continue_skill(conv_id, "user reply")
         assert response == "Response"
+
+
+# ------------------------------------------------------------------
+# Google service integration tests
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_google_services():
+    mock = MagicMock()
+    mock.available = True
+    mock.search_email = AsyncMock(return_value=[
+        {"id": "msg1", "from": "alice@test.com", "subject": "Hello", "snippet": "Hi there"},
+    ])
+    mock.read_email = AsyncMock(return_value={
+        "id": "msg1", "from": "alice@test.com", "subject": "Hello",
+        "date": "Mon, 1 Jan 2025", "body": "Full body content",
+    })
+    mock.list_unread_email = AsyncMock(return_value=[
+        {"id": "u1", "from": "bob@test.com", "subject": "Urgent", "snippet": "Please read"},
+    ])
+    mock.create_document = AsyncMock(return_value={
+        "id": "doc1", "title": "Notes", "url": "https://docs.google.com/document/d/doc1/edit",
+    })
+    mock.list_drive_files = AsyncMock(return_value=[
+        {"name": "Report.docx", "mimeType": "application/vnd.google-apps.document",
+         "webViewLink": "https://docs.google.com/doc/123"},
+    ])
+    return mock
+
+
+@pytest.fixture
+def executor_with_google(state_manager, mock_llm_router, mock_output_handler, skill_loader, mock_google_services):
+    return SkillExecutor(
+        state_manager, mock_llm_router, mock_output_handler, skill_loader,
+        google_services=mock_google_services,
+    )
+
+
+GMAIL_SKILL = {
+    "name": "email-summary",
+    "description": "Summarize emails",
+    "trigger": "scheduled",
+    "llm": "cloud",
+    "context": "Summarize unread emails.",
+    "services": ["gmail"],
+    "auto_fetch_unread": True,
+    "max_turns": 2,
+}
+
+
+class TestServiceActions:
+    @pytest.mark.asyncio
+    async def test_process_no_actions(self, executor):
+        """No action blocks = passthrough."""
+        result = await executor.process_service_actions("Just a normal response")
+        assert result == "Just a normal response"
+
+    @pytest.mark.asyncio
+    async def test_process_no_google(self, executor):
+        """No google_services = passthrough even with action blocks."""
+        response = "Here: [[ACTION:search_email|query=test]]"
+        result = await executor.process_service_actions(response)
+        assert result == response  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_search_email_action(self, executor_with_google, mock_google_services):
+        response = "Let me check: [[ACTION:search_email|query=from:alice]]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "alice@test.com" in result
+        assert "Hello" in result
+        mock_google_services.search_email.assert_called_once_with("from:alice")
+
+    @pytest.mark.asyncio
+    async def test_read_email_action(self, executor_with_google, mock_google_services):
+        response = "Reading: [[ACTION:read_email|id=msg1]]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "alice@test.com" in result
+        assert "Full body content" in result
+        mock_google_services.read_email.assert_called_once_with("msg1")
+
+    @pytest.mark.asyncio
+    async def test_create_doc_action(self, executor_with_google, mock_google_services):
+        response = "Creating: [[ACTION:create_doc|title=Meeting Notes|content=Hello world]]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "Notes" in result
+        assert "docs.google.com" in result
+        mock_google_services.create_document.assert_called_once_with(
+            title="Meeting Notes", content="Hello world"
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_files_action(self, executor_with_google, mock_google_services):
+        response = "Files: [[ACTION:list_files|query=name contains 'report']]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "Report.docx" in result
+
+    @pytest.mark.asyncio
+    async def test_unknown_action(self, executor_with_google):
+        response = "Do: [[ACTION:send_email|to=evil@hack.com]]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "Unknown action" in result
+
+    @pytest.mark.asyncio
+    async def test_action_error_handled(self, executor_with_google, mock_google_services):
+        mock_google_services.search_email = AsyncMock(side_effect=Exception("API down"))
+        response = "Check: [[ACTION:search_email|query=test]]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "failed" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_multiple_actions(self, executor_with_google, mock_google_services):
+        response = (
+            "Email: [[ACTION:search_email|query=test]] "
+            "and doc: [[ACTION:create_doc|title=Test|content=Hi]]"
+        )
+        result = await executor_with_google.process_service_actions(response)
+        assert "alice@test.com" in result
+        assert "docs.google.com" in result
+
+    @pytest.mark.asyncio
+    async def test_search_email_empty_results(self, executor_with_google, mock_google_services):
+        mock_google_services.search_email = AsyncMock(return_value=[])
+        response = "Check: [[ACTION:search_email|query=nonexistent]]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "No emails found" in result
+
+    @pytest.mark.asyncio
+    async def test_list_files_empty_results(self, executor_with_google, mock_google_services):
+        mock_google_services.list_drive_files = AsyncMock(return_value=[])
+        response = "Files: [[ACTION:list_files|query=nothing]]"
+        result = await executor_with_google.process_service_actions(response)
+        assert "No files found" in result
+
+
+class TestServiceContext:
+    @pytest.mark.asyncio
+    async def test_build_service_context_no_services(self, executor):
+        config = {"name": "test", "context": "Test"}
+        result = await executor._build_service_context(config)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_build_service_context_no_google(self, executor):
+        config = {"name": "test", "context": "Test", "services": ["gmail"]}
+        result = await executor._build_service_context(config)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_build_service_context_gmail(self, executor_with_google):
+        config = {
+            "name": "test", "context": "Test",
+            "services": ["gmail"],
+        }
+        result = await executor_with_google._build_service_context(config)
+        assert "Gmail" in result
+        assert "read-only" in result
+        assert "CANNOT send" in result
+
+    @pytest.mark.asyncio
+    async def test_build_service_context_drive(self, executor_with_google):
+        config = {
+            "name": "test", "context": "Test",
+            "services": ["drive"],
+        }
+        result = await executor_with_google._build_service_context(config)
+        assert "Drive" in result
+        assert "CANNOT share" in result
+
+    @pytest.mark.asyncio
+    async def test_build_service_context_prefetch_unread(self, executor_with_google, mock_google_services):
+        config = {
+            "name": "test", "context": "Test",
+            "services": ["gmail"],
+            "auto_fetch_unread": True,
+        }
+        result = await executor_with_google._build_service_context(config)
+        assert "bob@test.com" in result
+        assert "Urgent" in result
+        mock_google_services.list_unread_email.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_build_service_context_prefetch_empty(self, executor_with_google, mock_google_services):
+        mock_google_services.list_unread_email = AsyncMock(return_value=[])
+        config = {
+            "name": "test", "context": "Test",
+            "services": ["gmail"],
+            "auto_fetch_unread": True,
+        }
+        result = await executor_with_google._build_service_context(config)
+        assert "No unread emails" in result
+
+    @pytest.mark.asyncio
+    async def test_build_service_context_prefetch_error(self, executor_with_google, mock_google_services):
+        mock_google_services.list_unread_email = AsyncMock(side_effect=Exception("API error"))
+        config = {
+            "name": "test", "context": "Test",
+            "services": ["gmail"],
+            "auto_fetch_unread": True,
+        }
+        # Should not raise — error is logged and swallowed
+        result = await executor_with_google._build_service_context(config)
+        assert "Gmail" in result
+
+    @pytest.mark.asyncio
+    async def test_start_skill_with_services(self, executor_with_google, mock_llm_router, mock_google_services):
+        mock_llm_router.get_response = AsyncMock(
+            return_value=("Here's your email summary!", "cloud")
+        )
+        response, conv_id = await executor_with_google.start_skill(
+            skill_config=GMAIL_SKILL,
+            channel_id="C123",
+            user_id="U456",
+            slack_thread="t1",
+        )
+        assert "email summary" in response
+        # Should have pre-fetched unread emails
+        mock_google_services.list_unread_email.assert_called_once()

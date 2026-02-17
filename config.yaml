@@ -21,3 +21,10 @@ owner_user_id: null
 
 # Path to skill YAML files (defaults to ~/.slack-booty/skills/)
 # skills_dir: "~/.slack-booty/skills"
+
+# Google services (Gmail read-only + Google Drive create/read only)
+# Run `python -m services.google_auth` to authenticate.
+google:
+  enabled: false
+  credentials_path: "~/.slack-booty/google_credentials.json"
+  token_path: "~/.slack-booty/google_token.json"

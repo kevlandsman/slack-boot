@@ -32,6 +32,8 @@ class SkillLoader:
                 logger.error("Failed to load skill from %s", path, exc_info=True)
         return self._skills
 
+    VALID_SERVICES = {"gmail", "drive"}
+
     def _load_file(self, path: Path) -> dict:
         with open(path) as f:
             data = yaml.safe_load(f)
@@ -39,6 +41,14 @@ class SkillLoader:
         for field in required:
             if field not in data:
                 raise ValueError(f"Skill {path.name} missing required field: {field}")
+
+        # Warn on unknown service declarations (non-fatal)
+        for svc in data.get("services", []):
+            if svc not in self.VALID_SERVICES:
+                logger.warning(
+                    "Skill %s declares unknown service: %s", data["name"], svc
+                )
+
         return data
 
     def get_skill(self, name: str) -> Optional[dict]:

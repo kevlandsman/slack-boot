@@ -90,6 +90,34 @@ async def main():
     bot_user_id = auth_response["user_id"]
     logger.info("Bot user ID: %s", bot_user_id)
 
+    # Google services (optional)
+    google_services = None
+    google_config = config.get("google", {})
+    if google_config.get("enabled", False):
+        try:
+            from services.google_auth import GoogleAuthManager
+            from services.google_services import GoogleServices
+
+            auth_manager = GoogleAuthManager(
+                token_path=google_config.get("token_path"),
+                credentials_path=google_config.get("credentials_path"),
+            )
+            if auth_manager.is_configured():
+                google_services = GoogleServices(auth_manager)
+                logger.info("Google services initialized (read-only)")
+            else:
+                logger.warning(
+                    "Google enabled but not authenticated. "
+                    "Run: python -m services.google_auth"
+                )
+        except ImportError:
+            logger.warning(
+                "Google enabled but google-api-python-client not installed. "
+                "Run: pip install -r requirements.txt"
+            )
+        except Exception:
+            logger.warning("Failed to initialize Google services", exc_info=True)
+
     # Scheduler (created before AgentCore so we can pass it in)
     scheduler = SkillScheduler(db_path, skill_loader)
 
@@ -101,6 +129,7 @@ async def main():
         bot_user_id=bot_user_id,
         scheduler=scheduler,
         slack_client=app.client,
+        google_services=google_services,
     )
     trigger_callback = setup_scheduled_skill_callback(agent, app)
     scheduler.set_trigger_callback(trigger_callback)
@@ -120,9 +149,10 @@ async def main():
             next_info = ""
             if scheduled:
                 next_info = f", next scheduled skill: {scheduled[0]['name']}"
+            google_status = " Google: connected." if google_services else ""
             await app.client.chat_postMessage(
                 channel=dm["channel"]["id"],
-                text=f"Back online. {skill_count} skill(s) active{next_info}.",
+                text=f"Back online. {skill_count} skill(s) active{next_info}.{google_status}",
             )
         except Exception:
             logger.warning("Could not send startup DM", exc_info=True)

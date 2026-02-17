@@ -10,3 +10,5 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+google_credentials.json
+google_token.json
