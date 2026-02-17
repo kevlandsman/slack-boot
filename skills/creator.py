@@ -17,7 +17,7 @@ The YAML must include these fields:
 - name: a kebab-case identifier
 - description: brief description
 - trigger: one of "scheduled", "mention", or "command"
-- channel: "dm" for direct messages, or "#channel-name"
+- channel: "dm" for direct messages, or a channel reference ("#channel-name" or channel ID like "C123ABC")
 - llm: "local" or "cloud" (use "cloud" for nuanced multi-turn conversations, "local" for simple tasks)
 - context: detailed instructions for the LLM when executing this skill
 
@@ -66,8 +66,12 @@ class SkillCreator:
             logger.error("Generated config missing 'name' field")
             return None
 
-        self.loader.save_skill(skill_config)
-        return skill_config
+        try:
+            self.loader.save_skill(skill_config)
+            return skill_config
+        except Exception:
+            logger.error("Failed to save generated skill", exc_info=True)
+            return None
 
     async def modify_skill(self, skill_name: str, modification: str) -> Optional[dict]:
         skill = self.loader.get_skill(skill_name)
@@ -100,6 +104,10 @@ class SkillCreator:
             return None
 
         if isinstance(updated, dict) and "name" in updated:
-            self.loader.save_skill(updated)
-            return updated
+            try:
+                self.loader.save_skill(updated)
+                return updated
+            except Exception:
+                logger.error("Failed to save updated skill", exc_info=True)
+                return None
         return None

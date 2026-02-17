@@ -154,3 +154,22 @@ class TestConversationStateManager:
         assert id1 != id2
         active = state_manager.get_active_conversations_for_channel("C123")
         assert len(active) == 2
+
+    def test_get_active_conversations_excludes_completed(self, state_manager):
+        state_manager.create_conversation(
+            slack_thread="active-thread",
+            channel_id="C123",
+            user_id="U1",
+            skill_name="skill-a",
+            state={"phase": "active", "turn": 2},
+        )
+        state_manager.create_conversation(
+            slack_thread="completed-thread",
+            channel_id="C123",
+            user_id="U1",
+            skill_name="skill-b",
+            state={"phase": "complete", "turn": 8},
+        )
+        active = state_manager.get_active_conversations_for_channel("C123")
+        assert len(active) == 1
+        assert active[0]["slack_thread"] == "active-thread"

@@ -150,3 +150,15 @@ class TestSkillLoader:
         loader.save_skill(config)
         skill = loader.get_skill("evolving")
         assert skill["description"] == "V2"
+
+    def test_save_skill_prevents_path_traversal(self, loader, skills_dir, tmp_path):
+        config = {
+            "name": "../escape",
+            "description": "Bad path",
+            "trigger": "command",
+            "context": "Context",
+        }
+        path = loader.save_skill(config)
+        assert path.parent == skills_dir.resolve()
+        assert path.exists()
+        assert not (tmp_path / "escape.yaml").exists()

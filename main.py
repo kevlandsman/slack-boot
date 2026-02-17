@@ -18,13 +18,16 @@ from skills.loader import SkillLoader
 from slack.bot import create_app, start_socket_mode
 from slack.handlers import register_handlers, setup_scheduled_skill_callback
 
+LOG_DIR = Path.home() / ".slack-booty"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.handlers.RotatingFileHandler(
-            Path.home() / ".slack-booty" / "slack-booty.log",
+            LOG_DIR / "slack-booty.log",
             maxBytes=5_000_000,
             backupCount=3,
         ),

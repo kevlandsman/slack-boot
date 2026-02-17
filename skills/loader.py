@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -50,18 +51,32 @@ class SkillLoader:
         return [s for s in self._skills.values() if s.get("trigger") == "scheduled"]
 
     def get_channel_skills(self, channel: str) -> list[dict]:
+        normalized = self._normalize_channel(channel)
         return [
             s
             for s in self._skills.values()
-            if s.get("channel") == channel and s.get("trigger") == "mention"
+            if s.get("trigger") == "mention"
+            and self._normalize_channel(s.get("channel", "")) == normalized
         ]
 
     def save_skill(self, skill_config: dict) -> Path:
         self.ensure_dir()
-        filename = skill_config["name"].replace(" ", "-") + ".yaml"
-        path = self.skills_dir / filename
+        path = self._build_skill_path(skill_config["name"])
         with open(path, "w") as f:
             yaml.dump(skill_config, f, default_flow_style=False, sort_keys=False)
         self._skills[skill_config["name"]] = skill_config
         logger.info("Saved skill: %s -> %s", skill_config["name"], path)
+        return path
+
+    @staticmethod
+    def _normalize_channel(channel: str) -> str:
+        return str(channel).strip().lstrip("#").lower()
+
+    def _build_skill_path(self, skill_name: str) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(skill_name)).strip(".-")
+        if not safe:
+            raise ValueError("Skill name must contain alphanumeric characters")
+        path = (self.skills_dir / f"{safe}.yaml").resolve()
+        if self.skills_dir.resolve() not in path.parents:
+            raise ValueError(f"Refusing to write skill outside skills dir: {skill_name}")
         return path

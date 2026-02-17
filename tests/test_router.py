@@ -96,6 +96,23 @@ class TestMessageRouter:
         assert msg_type == MessageType.CHANNEL_INTERACTION
         assert "skills" in ctx
 
+    def test_classify_channel_interaction_mention_with_channel_name(self, router, skill_loader):
+        skill_loader.save_skill({
+            "name": "general-helper",
+            "description": "General channel helper",
+            "trigger": "mention",
+            "channel": "#general",
+            "context": "Help in general.",
+        })
+        event = {
+            "text": "<@U_BOT> summarize this thread",
+            "channel": "C123",
+            "channel_name": "general",
+        }
+        msg_type, ctx = router.classify(event)
+        assert msg_type == MessageType.CHANNEL_INTERACTION
+        assert ctx["skills"][0]["name"] == "general-helper"
+
     def test_classify_general_message(self, router):
         event = {
             "text": "What's the weather like today?",

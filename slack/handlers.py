@@ -1,12 +1,33 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from slack_bolt.async_app import AsyncApp
 
 from agent.core import AgentCore
 
 logger = logging.getLogger(__name__)
+
+
+async def _enrich_channel_name(event: dict, client) -> dict:
+    """Best-effort channel-name lookup so mention skills can match #channel configs."""
+    channel_id = event.get("channel")
+    if not channel_id or event.get("channel_name"):
+        return event
+    # DM channels don't need #channel skill matching.
+    if str(channel_id).startswith("D"):
+        return event
+    try:
+        info = await client.conversations_info(channel=channel_id)
+        channel_name = info.get("channel", {}).get("name")
+        if channel_name:
+            enriched = dict(event)
+            enriched["channel_name"] = channel_name
+            return enriched
+    except Exception:
+        logger.debug("Unable to resolve channel name for %s", channel_id, exc_info=True)
+    return event
 
 
 def register_handlers(app: AsyncApp, agent: AgentCore):
@@ -19,7 +40,8 @@ def register_handlers(app: AsyncApp, agent: AgentCore):
         logger.debug("Incoming message event: %s", event)
 
         try:
-            response = await agent.handle_message(event)
+            enriched_event = await _enrich_channel_name(event, client)
+            response = await agent.handle_message(enriched_event)
         except Exception:
             logger.error("Error handling message", exc_info=True)
             response = "Something went wrong on my end. I'll look into it."
@@ -33,7 +55,8 @@ def register_handlers(app: AsyncApp, agent: AgentCore):
         logger.debug("Mention event: %s", event)
 
         try:
-            response = await agent.handle_message(event)
+            enriched_event = await _enrich_channel_name(event, client)
+            response = await agent.handle_message(enriched_event)
         except Exception:
             logger.error("Error handling mention", exc_info=True)
             response = "Something went wrong on my end. I'll look into it."
@@ -46,20 +69,50 @@ def register_handlers(app: AsyncApp, agent: AgentCore):
 def setup_scheduled_skill_callback(agent: AgentCore, app: AsyncApp):
     """Returns a callback for the scheduler to trigger skills."""
 
+    async def _find_user_id(target_user: str) -> Optional[str]:
+        wanted = target_user.lower()
+        cursor: Optional[str] = None
+        while True:
+            response = await app.client.users_list(cursor=cursor, limit=200)
+            for member in response.get("members", []):
+                name = member.get("name", "").lower()
+                real_name = member.get("real_name", "").lower()
+                display_name = member.get("profile", {}).get("display_name", "").lower()
+                if wanted in {name, real_name, display_name}:
+                    return member["id"]
+            cursor = response.get("response_metadata", {}).get("next_cursor") or None
+            if not cursor:
+                break
+        return None
+
+    async def _find_channel_id(channel_name: str) -> Optional[str]:
+        wanted = channel_name.lower().lstrip("#")
+        cursor: Optional[str] = None
+        while True:
+            response = await app.client.conversations_list(
+                types="public_channel,private_channel",
+                exclude_archived=True,
+                cursor=cursor,
+                limit=200,
+            )
+            for channel in response.get("channels", []):
+                if channel.get("name", "").lower() == wanted:
+                    return channel["id"]
+            cursor = response.get("response_metadata", {}).get("next_cursor") or None
+            if not cursor:
+                break
+        return None
+
     async def on_skill_trigger(skill_config: dict):
         target_user = skill_config.get("target_user")
         channel = skill_config.get("channel", "dm")
 
         try:
-            if channel == "dm" and target_user:
-                # Look up user ID by display name
-                users = await app.client.users_list()
-                user_id = None
-                for member in users["members"]:
-                    if member.get("name") == target_user or member.get("real_name", "").lower() == target_user.lower():
-                        user_id = member["id"]
-                        break
-
+            if channel == "dm":
+                if not target_user:
+                    logger.error("DM scheduled skill missing target_user: %s", skill_config.get("name"))
+                    return
+                user_id = await _find_user_id(target_user)
                 if not user_id:
                     logger.error("Could not find user: %s", target_user)
                     return
@@ -67,14 +120,11 @@ def setup_scheduled_skill_callback(agent: AgentCore, app: AsyncApp):
                 dm = await app.client.conversations_open(users=[user_id])
                 channel_id = dm["channel"]["id"]
             else:
-                # Channel skill — strip the # prefix
-                channel_name = channel.lstrip("#")
-                channels = await app.client.conversations_list(types="public_channel,private_channel")
-                channel_id = None
-                for ch in channels["channels"]:
-                    if ch["name"] == channel_name:
-                        channel_id = ch["id"]
-                        break
+                channel_ref = str(channel).strip()
+                if channel_ref and channel_ref[0] in {"C", "G"} and not channel_ref.startswith("#"):
+                    channel_id = channel_ref
+                else:
+                    channel_id = await _find_channel_id(channel_ref)
                 if not channel_id:
                     logger.error("Could not find channel: %s", channel)
                     return

@@ -69,7 +69,17 @@ class MessageRouter:
 
         # Check for channel interactions where the bot is mentioned
         if f"<@{self.bot_user_id}>" in text:
-            channel_skills = self.skills.get_channel_skills(f"#{channel}")
+            channel_refs = [channel]
+            channel_name = event.get("channel_name")
+            if channel_name:
+                channel_refs.append(f"#{channel_name}")
+            channel_skills: list[dict] = []
+            seen_names: set[str] = set()
+            for ref in channel_refs:
+                for skill in self.skills.get_channel_skills(ref):
+                    if skill["name"] not in seen_names:
+                        channel_skills.append(skill)
+                        seen_names.add(skill["name"])
             if channel_skills:
                 return MessageType.CHANNEL_INTERACTION, {
                     "skills": channel_skills,

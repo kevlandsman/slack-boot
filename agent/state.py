@@ -150,7 +150,11 @@ class ConversationStateManager:
             results = []
             for row in rows:
                 r = dict(row)
-                r["state"] = json.loads(r["state"]) if r["state"] else {}
+                state = json.loads(r["state"]) if r["state"] else {}
+                # Completed skills should not capture future unrelated messages.
+                if state.get("phase") == "complete":
+                    continue
+                r["state"] = state
                 results.append(r)
             return results
         finally:
