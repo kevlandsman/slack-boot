@@ -58,6 +58,7 @@ This downloads the Qwen 3 8B model (~5-6 GB). It fits comfortably on a 16GB Mac 
 | `im:write` | Open and send DMs |
 | `im:history` | Access DM history for context |
 | `channels:read` | List channels |
+| `groups:read` | List private channels (for `#channel-name` scheduled targets) |
 | `channels:history` | Read messages in joined channels |
 | `users:read` | Look up user names and IDs |
 | `files:write` | Share files (grocery lists, summaries, etc.) |
@@ -120,14 +121,14 @@ Tell the bot what you want and it generates a YAML skill config automatically:
 
 > "Please check in with me every day at 4 PM"
 
-The bot creates a skill, registers the schedule, and confirms back to you. You can refine it:
+The bot creates and saves a skill, then confirms back to you. Scheduled skills are registered at startup, so restart the app after creating a new scheduled skill. You can refine it:
 
 > "Add a question about exercise"
 > "Change it to 5 PM"
 
-### Built-in example skills
+### Example skills
 
-Three example skills are installed to `~/.slack-booty/skills/`:
+No skills are auto-installed by default. Add YAML files in `~/.slack-booty/skills/` to enable skills like:
 
 | Skill | Trigger | What it does |
 |---|---|---|
@@ -153,7 +154,6 @@ context: |
 output:
   format: markdown
   save_to: ~/standups/{date}.md
-  post_to_channel: true
 ```
 
 #### Skill config reference
@@ -164,7 +164,7 @@ output:
 | `description` | Yes | What the skill does |
 | `trigger` | Yes | `scheduled`, `mention`, or `command` |
 | `context` | Yes | System prompt for the LLM |
-| `channel` | No | `dm` or `#channel-name` |
+| `channel` | No | `dm`, `#channel-name`, or a channel ID like `C123ABC` |
 | `schedule` | If scheduled | Cron expression, e.g. `0 16 * * *` |
 | `target_user` | No | Username for DM skills |
 | `llm` | No | `local` or `cloud` (default: `local`) |
@@ -175,7 +175,6 @@ output:
 | `participants` | No | List of usernames |
 | `output.format` | No | `markdown` or `text` |
 | `output.save_to` | No | File path with `{date}` or `{week}` placeholders |
-| `output.post_to_channel` | No | Post output back to the channel |
 
 ## LLM routing
 
@@ -250,7 +249,7 @@ slack-booty/
 │   └── handlers.py          # Event handlers
 ├── db/
 │   └── schema.sql           # SQLite schema
-└── tests/                   # 87 tests
+└── tests/                   # 91 tests
 ```
 
 ## Tests
