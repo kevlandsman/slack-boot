@@ -1,0 +1,23 @@
+# Slack-Booty Configuration
+# Copy this file and fill in your actual values.
+
+slack:
+  bot_token: "xoxb-your-bot-token"       # Bot User OAuth Token
+  app_token: "xapp-your-app-level-token"  # App-Level Token (Socket Mode)
+
+claude:
+  api_key: "sk-ant-your-api-key"
+  model: "claude-haiku-4-20250414"
+
+ollama:
+  base_url: "http://localhost:11434"
+  model: "qwen3:8b"
+
+# Force all LLM traffic to one provider: "local" or "cloud" (null = auto-route)
+llm_override: null
+
+# Slack user ID of the bot owner (for startup DMs)
+owner_user_id: null
+
+# Path to skill YAML files (defaults to ~/.slack-booty/skills/)
+# skills_dir: "~/.slack-booty/skills"
