@@ -126,10 +126,14 @@ class SkillExecutor:
         if turn >= max_turns:
             current_state["phase"] = "complete"
             if skill_config and "output" in skill_config:
-                await self.output.handle(skill_config, history + [
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": response},
-                ])
+                await self.output.handle(
+                    skill_config,
+                    history + [
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": response},
+                    ],
+                    channel_id=conv.get("channel_id"),
+                )
 
         current_state["turn"] = turn
         self.state.update_conversation(

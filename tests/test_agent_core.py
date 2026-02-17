@@ -167,6 +167,98 @@ class TestAgentCore:
         assert conv_id is not None
 
     @pytest.mark.asyncio
+    async def test_command_registers_schedule_immediately(self, state_manager, mock_llm_router, skill_loader):
+        mock_scheduler = MagicMock()
+        agent = AgentCore(
+            state_manager=state_manager,
+            llm_router=mock_llm_router,
+            skill_loader=skill_loader,
+            bot_user_id="U_BOT",
+            scheduler=mock_scheduler,
+        )
+
+        import yaml
+        skill_yaml = yaml.dump({
+            "name": "live-skill",
+            "description": "Live scheduled skill",
+            "trigger": "scheduled",
+            "schedule": "0 9 * * *",
+            "context": "Good morning!",
+        })
+        mock_llm_router.get_response = AsyncMock(return_value=(skill_yaml, "cloud"))
+
+        event = {
+            "text": "Please start a morning check-in every day at 9am",
+            "channel": "D123",
+            "user": "U1",
+        }
+        response = await agent.handle_message(event)
+        assert "active now" in response
+        mock_scheduler.add_skill_job.assert_called_once()
+        call_arg = mock_scheduler.add_skill_job.call_args[0][0]
+        assert call_arg["name"] == "live-skill"
+
+    @pytest.mark.asyncio
+    async def test_modification_updates_schedule(self, state_manager, mock_llm_router, skill_loader):
+        mock_scheduler = MagicMock()
+        agent = AgentCore(
+            state_manager=state_manager,
+            llm_router=mock_llm_router,
+            skill_loader=skill_loader,
+            bot_user_id="U_BOT",
+            scheduler=mock_scheduler,
+        )
+
+        skill_loader.save_skill({
+            "name": "daily-checkin",
+            "description": "Daily check-in",
+            "trigger": "scheduled",
+            "schedule": "0 16 * * *",
+            "context": "Check in daily",
+        })
+        skill_loader.load_all()
+
+        import yaml
+        updated = yaml.dump({
+            "name": "daily-checkin",
+            "description": "Updated check-in",
+            "trigger": "scheduled",
+            "schedule": "0 17 * * *",
+            "context": "Check in at new time",
+        })
+        mock_llm_router.get_response = AsyncMock(return_value=(updated, "cloud"))
+
+        event = {
+            "text": "Change the daily check-in schedule to 5 PM",
+            "channel": "D123",
+            "user": "U1",
+        }
+        response = await agent.handle_message(event)
+        assert "Updated" in response or "daily-checkin" in response
+        mock_scheduler.add_skill_job.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_command_no_scheduler_still_works(self, agent, mock_llm_router):
+        """Creating a scheduled skill without a scheduler should not error."""
+        import yaml
+        skill_yaml = yaml.dump({
+            "name": "no-sched",
+            "description": "No scheduler present",
+            "trigger": "scheduled",
+            "schedule": "0 12 * * *",
+            "context": "Noon check",
+        })
+        mock_llm_router.get_response = AsyncMock(return_value=(skill_yaml, "cloud"))
+
+        event = {
+            "text": "Please start a noon check-in",
+            "channel": "D123",
+            "user": "U1",
+        }
+        response = await agent.handle_message(event)
+        assert "no-sched" in response
+
+    @pytest.mark.asyncio
     async def test_close(self, agent, mock_llm_router):
         await agent.close()
         mock_llm_router.close.assert_called_once()

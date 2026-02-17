@@ -5,6 +5,7 @@ import logging
 from agent.state import ConversationStateManager
 from agent.router import MessageRouter, MessageType
 from agent.llm_router import LLMRouter
+from agent.scheduler import SkillScheduler
 from skills.loader import SkillLoader
 from skills.executor import SkillExecutor
 from skills.creator import SkillCreator
@@ -20,14 +21,17 @@ class AgentCore:
         llm_router: LLMRouter,
         skill_loader: SkillLoader,
         bot_user_id: str,
+        scheduler: SkillScheduler | None = None,
+        slack_client=None,
     ):
         self.state = state_manager
         self.llm = llm_router
         self.skills = skill_loader
         self.bot_user_id = bot_user_id
+        self.scheduler = scheduler
 
         self.router = MessageRouter(state_manager, skill_loader, bot_user_id)
-        self.output_handler = OutputHandler()
+        self.output_handler = OutputHandler(slack_client=slack_client)
         self.executor = SkillExecutor(state_manager, llm_router, self.output_handler, skill_loader)
         self.creator = SkillCreator(llm_router, skill_loader)
 
@@ -71,11 +75,19 @@ class AgentCore:
         text = context["text"]
         skill_config = await self.creator.create_from_description(text)
         if skill_config:
+            # Live-register the schedule so it fires without a restart
+            if self.scheduler and skill_config.get("trigger") == "scheduled":
+                self.scheduler.add_skill_job(skill_config)
+
+            schedule_info = ""
+            if skill_config.get("schedule"):
+                schedule_info = f" | Schedule: `{skill_config['schedule']}` (active now)"
+
             return (
                 f"Got it! I've created a new skill: *{skill_config['name']}*\n"
                 f"_{skill_config['description']}_\n"
                 f"Trigger: `{skill_config['trigger']}`"
-                + (f" | Schedule: `{skill_config.get('schedule', 'N/A')}`" if skill_config.get("schedule") else "")
+                + schedule_info
                 + "\nYou can modify this by telling me what to change."
             )
         return "I wasn't able to create that skill. Could you rephrase what you'd like?"
@@ -84,10 +96,16 @@ class AgentCore:
         text = context["text"]
         # Try to find which skill the user is referring to
         all_skills = self.skills.get_all_skills()
+        text_lower = text.lower()
+        # Normalize: remove hyphens and spaces for fuzzy substring matching
+        text_compact = text_lower.replace("-", "").replace(" ", "")
         for name, skill in all_skills.items():
-            if name.replace("-", " ") in text.lower():
+            name_compact = name.replace("-", "")
+            if name in text_lower or name_compact in text_compact:
                 updated = await self.creator.modify_skill(name, text)
                 if updated:
+                    if self.scheduler and updated.get("trigger") == "scheduled":
+                        self.scheduler.add_skill_job(updated)
                     return f"Updated skill *{updated['name']}*. Changes saved."
                 return f"I had trouble updating *{name}*. Could you try rephrasing?"
 

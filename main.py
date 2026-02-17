@@ -90,16 +90,18 @@ async def main():
     bot_user_id = auth_response["user_id"]
     logger.info("Bot user ID: %s", bot_user_id)
 
+    # Scheduler (created before AgentCore so we can pass it in)
+    scheduler = SkillScheduler(db_path, skill_loader)
+
     # Agent core
     agent = AgentCore(
         state_manager=state_manager,
         llm_router=llm_router,
         skill_loader=skill_loader,
         bot_user_id=bot_user_id,
+        scheduler=scheduler,
+        slack_client=app.client,
     )
-
-    # Scheduler
-    scheduler = SkillScheduler(db_path, skill_loader)
     trigger_callback = setup_scheduled_skill_callback(agent, app)
     scheduler.set_trigger_callback(trigger_callback)
     scheduler.register_skills()

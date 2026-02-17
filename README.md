@@ -121,7 +121,7 @@ Tell the bot what you want and it generates a YAML skill config automatically:
 
 > "Please check in with me every day at 4 PM"
 
-The bot creates and saves a skill, then confirms back to you. Scheduled skills are registered at startup, so restart the app after creating a new scheduled skill. You can refine it:
+The bot creates the skill, registers any schedule immediately (no restart needed), and confirms back to you. You can refine it:
 
 > "Add a question about exercise"
 > "Change it to 5 PM"
@@ -154,6 +154,7 @@ context: |
 output:
   format: markdown
   save_to: ~/standups/{date}.md
+  post_to_channel: true
 ```
 
 #### Skill config reference
@@ -175,6 +176,7 @@ output:
 | `participants` | No | List of usernames |
 | `output.format` | No | `markdown` or `text` |
 | `output.save_to` | No | File path with `{date}` or `{week}` placeholders |
+| `output.post_to_channel` | No | Post the output back to the channel when the skill completes |
 
 ## LLM routing
 
@@ -249,7 +251,7 @@ slack-booty/
 │   └── handlers.py          # Event handlers
 ├── db/
 │   └── schema.sql           # SQLite schema
-└── tests/                   # 91 tests
+└── tests/                   # 99 tests
 ```
 
 ## Tests

@@ -9,7 +9,15 @@ logger = logging.getLogger(__name__)
 
 
 class OutputHandler:
-    async def handle(self, skill_config: dict, messages: list[dict]) -> Optional[str]:
+    def __init__(self, slack_client=None):
+        self.slack_client = slack_client
+
+    async def handle(
+        self,
+        skill_config: dict,
+        messages: list[dict],
+        channel_id: str | None = None,
+    ) -> Optional[str]:
         output_config = skill_config.get("output")
         if not output_config:
             return None
@@ -22,7 +30,20 @@ class OutputHandler:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
             logger.info("Saved output to %s", path)
-            return str(path)
+
+        if output_config.get("post_to_channel") and self.slack_client and channel_id:
+            try:
+                await self.slack_client.chat_postMessage(
+                    channel=channel_id, text=content
+                )
+                logger.info("Posted output to channel %s", channel_id)
+            except Exception:
+                logger.error(
+                    "Failed to post output to channel %s", channel_id, exc_info=True
+                )
+
+        if save_path:
+            return str(self._resolve_path(save_path))
 
         return content
 
