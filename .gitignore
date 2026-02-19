@@ -12,3 +12,4 @@ build/
 .pytest_cache/
 google_credentials.json
 google_token.json
+config.yaml
